@@ -5,7 +5,11 @@
 #include "ns3/applications-module.h"
 #include "ns3/random-variable-stream.h"
 #include <string>
-#include <iostream>
+#include <vector>
+#include <array>
+#include <utility>
+#include <map>
+//#include <iostream>
 
 const int peer_cnt = 10; // # of peer
 const double t_begin = 100; // simulation begin time
@@ -13,14 +17,14 @@ const double t_end = 200; // simulation end time
 
 using namespace ns3;
 typedef std::string bytes;
+typedef unsigned __int64_t ull;
 using namespace std;
 NS_LOG_COMPONENT_DEFINE("out1");
 NodeContainer nodes;
 
-
 void tcp_fail(Ptr<Socket> socket){
 	NS_LOG_INFO("TCP FAIL");
-	exit(99);
+	exit(99); // what can i do?
 }
 struct socketFunctor{
 	int id;
@@ -69,28 +73,86 @@ void SendUdpPacket(int i, Ipv4Address sip, uint16_t port, string payload){
 	});
 }
 
-struct InMemory{
+pair<Ipv4Address,uint16_t> fromull(ull v){
+	return {Ipv4Address(v & 0xffffffff),v >> 32 };
+}
+ull toull(Ipv4Address ip,uint16_t port){
+	return ip.Get() | ull(port)<<32;
+}
+
+class LinkProfile{
+	std::array<ull,8> addr;
+public:
+	LinkProfile(){}
+	LinkProfile(const bytes& dat){ // decode from bytes
+		memcpy(&addr,&dat[0],sizeof addr);
+	}
+	bytes encode(){
+		bytes dat(sizeof addr);
+		memcpy(&dat[0],&addr,sizeof addr);
+		return dat;
+	}
+	ull operator[](int i){
+		return addr[i];
+	}
+};
+
+namespace Server{
+	typedef ull addr_t; // addr_t = UDP/IP addr + port -> let be 8byte
+	typedef ull tcp_t;
+	
+}
+
+struct ClientMemory{
 	Ipv4Address my_ip;
 	uint16_t my_udp_port;
 	uint16_t my_tcp_port;
+	vector<bytes> buffer;
+	LinkProfile profile;
 };
-InMemory arr[1+peer_cnt];
+ClientMemory arr[1+peer_cnt];
 
 void server_tcp_recv( Ptr<const Packet> packet, const Address & address){
-	
+	switch(payload[0]){
+	case 0: // peer wants itself to be added
+		addPeerQuery(payload.substr(1));
+		break;
+	case 1: // peer wants peer(?) to be deleted
+		deletePeerQuery(payload.substr(1));
+		break;
+	case 2: // exceptional security issue 
+		break;
+	default:
+		assert(false);// wrong query identifier
+	}
 }
 void client_tcp_recv( Ptr<const Packet> packet, const Address & address){
 	
 }
-void server_udp_recv( Ptr<const Packet> packet, const Address & address){
-	
+void server_udp_recv( Ptr<Socket> socket){
+	Ptr<Packet> packet;
+	Address address;
+	while((packet=socket->RecvFrom(address))){
+		uint8_t tmp[1024]={0};
+		packet->CopyData(tmp,packet->GetSize());
+		NS_LOG_INFO(tmp);
+	}
 }
-void client_udp_recv( Ptr<const Packet> packet, const Address & address){
-	
+void client_udp_recv( Ptr<Socket> socket){
+	Ptr<Packet> packet;
+	Address address;
+	while((packet=socket->RecvFrom(address))){
+		uint8_t tmp[1024]={0};
+		packet->CopyData(tmp,packet->GetSize());
+		NS_LOG_INFO(tmp);
+	}
 }
-void client_init(Ptr<Node> node, Ipv4Address sip, uint16_t port){
-	NewTcpSocket(node,sip,port,socketFunctor(i,[](Ptr<Socket>socket,int)){
-		string payload; // make this later... todo!
+void client_init(int i, Ipv4Address sip, uint16_t port){
+	ull v=toull(arr[i].my_ip,arr[i].my_udp_port);
+	NewTcpSocket(nodes.Get(i),sip,port,socketFunctor(i,[=](Ptr<Socket>socket,int)){
+		string payload(9,char(0));
+		payload[0] = 0;
+		*(ull*)payload[1] = v;
 		Ptr<Packet> packet = Create<Packet>
 			((uint8_t*)payload.c_str(),payload.size());
 		socket->Send(packet);
@@ -123,7 +185,7 @@ void setting(Ipv4InterfaceContainer ipif){
 		));
 		if(i){
 			Simulator::Schedule(Seconds(t_begin + i),&cli_init,
-			nodes.Get(i),ipif.GetAddress(0),tcpPort);
+				i,ipif.GetAddress(0),tcpPort, m);
 		}
 		else{
 			
@@ -135,28 +197,28 @@ void setting(Ipv4InterfaceContainer ipif){
 int main(int argc, char *argv[]) {
 	//LogCompenentEnable("out1",LOG_LEVEL_ALL);
 	
-	// ³ëµå »ı¼º
+	// ë…¸ë“œ ìƒì„±
 	//NodeContainer nodes;
 	nodes.Create(1 + peer_cnt);
 	
-	// CSMA ¼³Á¤
+	// CSMA ì„¤ì •
 	CsmaHelper csma;
 	csma.SetChannelAttribute("DataRate", StringValue("100Mbps"));
 	csma.SetChannelAttribute("Delay", TimeValue(NanoSeconds(6560)));
 	
-	// ³×Æ®¿öÅ© ÀåÄ¡ ¼³Ä¡
+	// ë„¤íŠ¸ì›Œí¬ ì¥ì¹˜ ì„¤ì¹˜
 	NetDeviceContainer devices = csma.Install(nodes);
 	
-	// ÀÎÅÍ³İ ½ºÅÃ ¼³Ä¡
+	// ì¸í„°ë„· ìŠ¤íƒ ì„¤ì¹˜
 	InternetStackHelper internet;
 	internet.Install(nodes);
 	
-	// IP ÁÖ¼Ò ÇÒ´ç
+	// IP ì£¼ì†Œ í• ë‹¹
 	Ipv4AddressHelper address;
 	address.SetBase("10.1.1.0", "255.255.255.0");
 	Ipv4InterfaceContainer interfaces = address.Assign(devices);
 	
-	setting(interfaces); // dynamic?	
+	setting(interfaces); // here we modify	
 	
 	// let's go
 	Simulator::Run();

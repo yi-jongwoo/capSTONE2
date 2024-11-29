@@ -100,7 +100,73 @@ public:
 namespace Server{
 	typedef ull addr_t; // addr_t = UDP/IP addr + port -> let be 8byte
 	typedef ull tcp_t;
+	class PeerTree{
+		std::vector<std::pair<tcp_t,addr_t>> arr;
+		std::map<tcp_t,int> addr_idx;
+		LinkProfile<addr_t> extProfile(int i){
+			LinkProfile<addr_t> p; // let 0.0.0.0 means nowhere 
+			p[0]=arr[i/4].second;
+			p[1]=arr[i/2].second;
+			if(i*2<ssize(arr))p[2]=arr[i*2].second;
+			if(i*2+1<ssize(arr))p[3]=arr[i*2+1].second;
+			if(i*4<ssize(arr))p[4]=arr[i*4].second;
+			if(i*4+1<ssize(arr))p[5]=arr[i*4+1].second;
+			if(i*4+2<ssize(arr))p[6]=arr[i*4+2].second;
+			if(i*4+3<ssize(arr))p[7]=arr[i*4+3].second;
+			return p;
+		}
+	public:
+		PeerTree():arr(1){} // let [0] be data source ( central server )
+		void init(tcp_t t,tcp_t u){
+			arr[0]={t,u}; //arr[0] should never changes..?
+			addr_idx[t]=0;
+		}
+		std::vector<std::pair<tcp_t,LinkProfile<addr_t>>> addPeer(tcp_t t,addr_t u){
+			std::vector<std::pair<tcp_t,LinkProfile<addr_t>>> res;
+			int i=ssize(arr);
+			arr.emplace_back(t,u);
+			addr_idx[t]=i;
+			if(i/4)res.emplace_back(arr[i/4].first,extProfile(i/4)); // pp
+			if(i/2)res.emplace_back(arr[i/2].first,extProfile(i/2)); // p
+			res.emplace_back(arr[i].first,extProfile(i));
+			return res;
+		}
+		std::vector<std::pair<tcp_t,LinkProfile<addr_t>>> deletePeer(int i){
+			std::vector<std::pair<tcp_t,LinkProfile<addr_t>>> res;
+			addr_idx.erase(arr[i].first);
+			arr[i]=arr.back(); arr.pop_back();
+			addr_idx[arr[i].first]=i;
+			if(i/4)res.emplace_back(arr[i/4].first,extProfile(i/4)); // pp
+			if(i/2)res.emplace_back(arr[i/2].first,extProfile(i/2)); // p
+			res.emplace_back(arr[i].first,extProfile(i));
+			if(i*2<ssize(arr))res.emplace_back(arr[i*2].first,extProfile(i*2));
+			if(i*2+1<ssize(arr))res.emplace_back(arr[i*2+1].first,extProfile(i*2+1));
+			if(i*4<ssize(arr))res.emplace_back(arr[i*4].first,extProfile(i*4));
+			if(i*4+1<ssize(arr))res.emplace_back(arr[i*4+1].first,extProfile(i*4+1));
+			if(i*4+2<ssize(arr))res.emplace_back(arr[i*4+2].first,extProfile(i*4+2));
+			if(i*4+3<ssize(arr))res.emplace_back(arr[i*4+3].first,extProfile(i*4+3));
+			int j=ssize(arr);
+			if(j/4)res.emplace_back(arr[j/4].first,extProfile(j/4)); // pp
+			if(j/2)res.emplace_back(arr[j/2].first,extProfile(j/2)); // p
+			return res;
+		}
+	};
 	
+	PeerTree<ull,ull> server_address;
+
+	void addPeerQuery(const std::string_view& payload){ // [ itself addr tcp|udp ]
+		ull addr[2];
+		memcpy(&addr,&payload[0],sizeof addr);
+		// call addPeer
+		auto res=server_address.addPeer(addr[0],addr[1]);
+		for(auto[tcpa,profile]:res){
+			auto[addr,port]=fromull(tcpa);
+			SendTcpPacket(0, addr, port, profile.encode());
+		}
+	}
+	void deletePeerQuery(const std::string_view& payload){ // [ itself addr ]
+		
+	}
 }
 
 struct ClientMemory{
@@ -113,12 +179,14 @@ struct ClientMemory{
 ClientMemory arr[1+peer_cnt];
 
 void server_tcp_recv( Ptr<const Packet> packet, const Address & address){
+	string payload;
+	
 	switch(payload[0]){
 	case 0: // peer wants itself to be added
-		addPeerQuery(payload.substr(1));
+		Server::addPeerQuery(payload.substr(1));
 		break;
 	case 1: // peer wants peer(?) to be deleted
-		deletePeerQuery(payload.substr(1));
+		Server::deletePeerQuery(payload.substr(1));
 		break;
 	case 2: // exceptional security issue 
 		break;
@@ -148,11 +216,13 @@ void client_udp_recv( Ptr<Socket> socket){
 	}
 }
 void client_init(int i, Ipv4Address sip, uint16_t port){
+	ull t=toull(arr[i].my_ip,arr[i].my_tcp_port);
 	ull v=toull(arr[i].my_ip,arr[i].my_udp_port);
 	NewTcpSocket(nodes.Get(i),sip,port,socketFunctor(i,[=](Ptr<Socket>socket,int)){
-		string payload(9,char(0));
+		string payload(17,char(0));
 		payload[0] = 0;
-		*(ull*)payload[1] = v;
+		*(ull*)payload[1] = t;
+		*(ull*)payload[9] = v;
 		Ptr<Packet> packet = Create<Packet>
 			((uint8_t*)payload.c_str(),payload.size());
 		socket->Send(packet);
@@ -160,7 +230,7 @@ void client_init(int i, Ipv4Address sip, uint16_t port){
 }
 
 void setting(Ipv4InterfaceContainer ipif){
-	uint16_t udpPort=8080, tcpPort = 8081; // tcp port of server ....and also client now
+	uint16_t udpPort=8080, tcpPort = 8081; // tcp port of server ....and also of client now
 	
 	ApplicationContainer tcpServerApp[peer_cnt+1];
 	for(int i=0;i<=peer_cnt;i++){
@@ -188,7 +258,7 @@ void setting(Ipv4InterfaceContainer ipif){
 				i,ipif.GetAddress(0),tcpPort, m);
 		}
 		else{
-			
+			// does server need initializing
 		}
 	}
 	
@@ -197,28 +267,24 @@ void setting(Ipv4InterfaceContainer ipif){
 int main(int argc, char *argv[]) {
 	//LogCompenentEnable("out1",LOG_LEVEL_ALL);
 	
-	// 노드 생성
+	//NODE 
 	//NodeContainer nodes;
 	nodes.Create(1 + peer_cnt);
 	
-	// CSMA 설정
+	// CSMA
 	CsmaHelper csma;
 	csma.SetChannelAttribute("DataRate", StringValue("100Mbps"));
 	csma.SetChannelAttribute("Delay", TimeValue(NanoSeconds(6560)));
-	
-	// 네트워크 장치 설치
 	NetDeviceContainer devices = csma.Install(nodes);
 	
-	// 인터넷 스택 설치
+	// IP
 	InternetStackHelper internet;
 	internet.Install(nodes);
-	
-	// IP 주소 할당
 	Ipv4AddressHelper address;
 	address.SetBase("10.1.1.0", "255.255.255.0");
-	Ipv4InterfaceContainer interfaces = address.Assign(devices);
+	Ipv4InterfaceContainer interfaces = address.Assign(devices); //important
 	
-	setting(interfaces); // here we modify	
+	setting(interfaces); // we will modify this function
 	
 	// let's go
 	Simulator::Run();

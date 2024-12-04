@@ -12,8 +12,11 @@
 //#include <iostream>
 
 const int peer_cnt = 10; // # of peer
-const double t_begin = 100; // simulation begin time
-const double t_end = 200; // simulation end time
+const double t_begin = 1000; // simulation begin time
+const double t_end = 2000; // simulation end time
+const double time_per_chunk = 0.1; // time s.t. one chunk cover
+const double len_of_chunk = 1024;
+const int num_of_chunk = 1024; // number of chunk = total simulation time
 
 using namespace ns3;
 typedef std::string bytes;
@@ -120,6 +123,9 @@ namespace Server{
 			return p;
 		}
 	public:
+		int tcp2idx(tcp_t x){
+			return addr_idx[x];
+		}
 		PeerTree():arr(1){} // let [0] be data source ( central server )
 		void init(tcp_t t,tcp_t u){
 			arr[0]={t,u}; //arr[0] should never changes..?
@@ -136,6 +142,7 @@ namespace Server{
 			return res;
 		}
 		std::vector<std::pair<tcp_t,LinkProfile>> deletePeer(int i){
+			if( i >= arr.size()) return {};
 			std::vector<std::pair<tcp_t,LinkProfile>> res;
 			addr_idx.erase(arr[i].first);
 			arr[i]=arr.back(); arr.pop_back();
@@ -157,6 +164,7 @@ namespace Server{
 	};
 	
 	PeerTree server_address;
+	map<ull,int> reputation;
 
 	void addPeerQuery(const std::string_view& payload){ // [ itself addr tcp|udp ]
 		ull addr[2];
@@ -169,10 +177,31 @@ namespace Server{
 		}
 	}
 	void deletePeerQuery(const std::string_view& payload){ // [ itself addr ]
-		ull addr[2];
-		//memcpy(&addr,&payload[0],sizeof addr);
-		
-		//auto res=server_address.deletePeer(addr[0],addr[1]);
+		ull addrs[2];
+		memcpy(&addrs,&payload[0],sizeof addrs);
+		ull addr = addrs[0];
+		ull pos = addrs[1];
+		if(pos > 8)return;
+		if(pos!=8){
+			if(reputation[addr]<2)
+				reputation[addr]++;
+			else
+				pos=8; // del itself
+		}
+		addr=server_address.tcp2idx(addr);
+		if(pos==0) addr/=4;
+		else if(pos==1) addr/=2;
+		else if(pos==2) addr*=2;
+		else if(pos==3) addr=addr*2+1;
+		else if(pos==4) addr*=4;
+		else if(pos==5) addr=addr*4+1;
+		else if(pos==6) addr=addr*4+2;
+		else if(pos==7) addr=addr*4+3;
+		auto res=server_address.deletePeer(addr);
+		for(auto[tcpa,profile]:res){
+			auto[addr,port]=fromull(tcpa);
+			SendTcpPacket(0, addr, port, profile.encode());
+		}
 	}
 }
 
@@ -209,9 +238,12 @@ void server_udp_recv( Ptr<Socket> socket){
 	Ptr<Packet> packet;
 	Address address;
 	while((packet=socket->RecvFrom(address))){
-		uint8_t tmp[1024]={0};
-		packet->CopyData(tmp,packet->GetSize());
-		NS_LOG_INFO(tmp);
+		string payload(packet->GetSize(),char(0));
+		packet->CopyData((uint8_t*)&payload[0],packet->GetSize());
+		switch(payload[0]){
+		default:
+			; // work similer with client
+		}
 	}
 }
 void client_udp_recv( Ptr<Socket> socket){
@@ -236,6 +268,11 @@ void client_init(int i, Ipv4Address sip, uint16_t port){
 		socket->Send(packet);
 	}));
 }
+void server_send_chunk(bytes chunk){
+	
+}
+
+bytes chunks[num_of_chunk];
 
 void setting(Ipv4InterfaceContainer ipif){
 	uint16_t udpPort=8080, tcpPort = 8081; // tcp port of server ....and also of client now
@@ -266,7 +303,9 @@ void setting(Ipv4InterfaceContainer ipif){
 				i,ipif.GetAddress(0),tcpPort);
 		}
 		else{
-			// does server need initializing
+			for(int i=0;i<num_of_chunk;i++){
+				
+			}
 		}
 	}
 	
